@@ -5,6 +5,7 @@ import com.google.gson.reflect.TypeToken;
 import com.gxu.jwxt.exceptions.LoginException;
 import com.gxu.jwxt.model.Semester;
 import com.gxu.jwxt.module.ScheduleModule;
+import com.gxu.jwxt.module.ProfileModule;
 
 import java.io.IOException;
 import java.lang.reflect.Type;
@@ -20,6 +21,7 @@ public class JwxtClient {
 
     private final JwxtSession session;
     private final ScheduleModule schedule;
+    private final ProfileModule profile;
 
     public JwxtClient(String username, String password) {
         this(username, password, null);
@@ -28,6 +30,7 @@ public class JwxtClient {
     public JwxtClient(String username, String password, String baseUrl) {
         this.session = new JwxtSession(username, password, baseUrl);
         this.schedule = new ScheduleModule(this.session);
+        this.profile = new ProfileModule(this.session);
     }
 
     // ========== 认证 ==========
@@ -48,6 +51,10 @@ public class JwxtClient {
 
     public ScheduleModule schedule() {
         return schedule;
+    }
+
+    public ProfileModule profile() {
+        return profile;
     }
 
     // ========== 通用查询 ==========

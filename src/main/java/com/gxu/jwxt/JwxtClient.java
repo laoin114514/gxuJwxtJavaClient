@@ -43,6 +43,15 @@ public class JwxtClient {
         session.login();
     }
 
+    /**
+     * 强制重新登录（session 过期后调用）。
+     *
+     * @throws LoginException 登录失败
+     */
+    public void relogin() throws LoginException {
+        session.relogin();
+    }
+
     public void logout() throws IOException {
         session.logout();
     }

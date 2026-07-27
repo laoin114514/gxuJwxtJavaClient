@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.gxu.jwxt.exceptions.LoginException;
 import com.gxu.jwxt.exceptions.NotLoggedInException;
+import com.gxu.jwxt.exceptions.SessionExpiredException;
 
 import okhttp3.*;
 
@@ -293,38 +294,40 @@ public class JwxtSession {
                 + ") exceeded for " + label, lastError);
     }
 
-    // ---- 公开 HTTP 方法（网络层重试 + session 过期自动重登录）----
+    // ---- 公开 HTTP 方法（网络层重试 + session 过期检测）----
 
     /**
-     * GET 请求（网络层重试 + session 过期自动重登录并重试一次）。
+     * GET 请求（网络层重试 + 限流）。
+     *
+     * @throws SessionExpiredException 如果响应内容为登录页（session 已过期）
      */
     public String get(String path) throws IOException {
         String body = getInternal(path);
         if (isLoginPage(body, path)) {
-            LOG.info("Session expired, re-logging in before retrying GET " + path);
-            relogin();
-            body = getInternal(path);
+            loggedIn.set(false);
+            throw new SessionExpiredException(path);
         }
         return body;
     }
 
     /**
      * POST 请求 (form-urlencoded)。
-     * 网络层重试 + session 过期自动重登录并重试一次。
+     * 网络层重试 + 限流。
+     *
+     * @throws SessionExpiredException 如果响应内容为登录页（session 已过期）
      */
     public String post(String path, java.util.Map<String, String> data) throws IOException {
         String body = postInternal(path, data);
         if (isLoginPage(body, path)) {
-            LOG.info("Session expired, re-logging in before retrying POST " + path);
-            relogin();
-            body = postInternal(path, data);
+            loggedIn.set(false);
+            throw new SessionExpiredException(path);
         }
         return body;
     }
 
     /**
      * POST 请求，返回完整 Response 对象。
-     * 网络层重试 + session 过期自动重登录并重试一次。
+     * 网络层重试 + 限流 + session 过期检测。
      */
     private Response postWithResponse(String path, java.util.Map<String, String> data) throws IOException {
         String label = "POST (stream) " + path;
@@ -347,15 +350,12 @@ public class JwxtSession {
                 Response resp = httpClient.newCall(req).execute();
                 if (resp.isSuccessful()) {
                     lastRequestTime = System.currentTimeMillis();
-                    // 读取 body 检测 session 过期
+                    // 检测 session 过期
                     String body = resp.peekBody(Long.MAX_VALUE).string();
                     if (isLoginPage(body, path)) {
                         resp.close();
-                        LOG.info("Session expired, re-logging in before retrying POST " + path);
-                        relogin();
-                        // 递减 attempt 以重新执行（不计入网络层重试次数）
-                        attempt = -1;
-                        continue;
+                        loggedIn.set(false);
+                        throw new SessionExpiredException(path);
                     }
                     return resp;
                 }
@@ -372,6 +372,8 @@ public class JwxtSession {
 
                 throw new IOException("HTTP " + code + " for " + path);
 
+            } catch (SessionExpiredException e) {
+                throw e; // 不重试，直接向上抛
             } catch (IOException e) {
                 if (shouldRetry(e) && attempt < retryConfig.getMaxRetries()) {
                     lastError = e;
@@ -430,7 +432,16 @@ public class JwxtSession {
 
     /**
      * 强制重新登录，无视当前登录状态。
-     * 用于 session 过期后的自动恢复。
+     *
+     * <p>捕获 {@link SessionExpiredException} 后调用此方法恢复会话：</p>
+     * <pre>{@code
+     * try {
+     *     data = client.schedule().personal("2025", "12");
+     * } catch (SessionExpiredException e) {
+     *     client.relogin();
+     *     data = client.schedule().personal("2025", "12");
+     * }
+     * }</pre>
      */
     public void relogin() throws LoginException {
         loggedIn.set(false);

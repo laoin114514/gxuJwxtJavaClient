@@ -5,32 +5,45 @@ import java.time.LocalDate;
 /** 学年学期 */
 public class Semester {
     private final String year;
-    private final String term;
+    private final Term term;
 
-    public Semester(String year, String term) {
+    public Semester(String year, Term term) {
         this.year = year;
         this.term = term;
     }
 
+    /** @deprecated 使用 {@link #Semester(String, Term)} */
+    @Deprecated
+    public Semester(String year, String termCode) {
+        this.year = year;
+        this.term = Term.fromCode(termCode);
+        if (this.term == null) {
+            throw new IllegalArgumentException("无效的学期编码: " + termCode + "，请使用 Term.SPRING 或 Term.AUTUMN");
+        }
+    }
+
     public String getYear() { return year; }
-    public String getTerm() { return term; }
+    public Term getTerm() { return term; }
+    /** 学期编码字符串（"3" 或 "12"），用于构造 API 参数 */
+    public String getTermCode() { return term.code(); }
 
     /** 根据当前日期推断学期 */
     public static Semester current() {
         LocalDate now = LocalDate.now();
         int y = now.getYear();
         int m = now.getMonthValue();
-        if (m >= 9) {
-            return new Semester(String.valueOf(y), "3");
-        } else if (m >= 2) {
-            return new Semester(String.valueOf(y - 1), "12");
+        Term t = Term.current();
+        if (t == Term.AUTUMN && m >= 9) {
+            return new Semester(String.valueOf(y), t);
+        } else if (t == Term.SPRING) {
+            return new Semester(String.valueOf(y - 1), t);
         } else {
-            return new Semester(String.valueOf(y - 1), "3");
+            return new Semester(String.valueOf(y - 1), t);
         }
     }
 
     @Override
     public String toString() {
-        return year + "-" + (Integer.parseInt(year) + 1) + " 第" + (term.equals("3") ? "一" : "二") + "学期";
+        return year + "-" + (Integer.parseInt(year) + 1) + " " + term.label();
     }
 }

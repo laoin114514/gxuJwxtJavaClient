@@ -5,6 +5,7 @@ import com.gxu.jwxt.JwxtSession;
 import com.gxu.jwxt.model.PageQuery;
 import com.gxu.jwxt.model.ScheduleResponse;
 import com.gxu.jwxt.model.TeacherScheduleResponse;
+import com.gxu.jwxt.model.Term;
 
 import java.io.IOException;
 import java.util.Map;
@@ -35,6 +36,12 @@ public class ScheduleModule {
     /**
      * 个人课表数据
      */
+    public ScheduleResponse personal(String year, Term term) throws IOException {
+        return personal(year, term.code());
+    }
+
+    /** @deprecated 使用 {@link #personal(String, Term)} */
+    @Deprecated
     public ScheduleResponse personal(String year, String term) throws IOException {
         session.ensureLogin();
         PageQuery q = new PageQuery();
@@ -49,6 +56,12 @@ public class ScheduleModule {
     /**
      * 教师课表
      */
+    public TeacherScheduleResponse teacher(String year, Term term, String name) throws IOException {
+        return teacher(year, term.code(), name);
+    }
+
+    /** @deprecated 使用 {@link #teacher(String, Term, String)} */
+    @Deprecated
     public TeacherScheduleResponse teacher(String year, String term, String name) throws IOException {
         session.ensureLogin();
         PageQuery q = new PageQuery();

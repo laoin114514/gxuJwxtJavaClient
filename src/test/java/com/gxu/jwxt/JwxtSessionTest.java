@@ -125,8 +125,9 @@ class JwxtSessionTest {
         assertNotNull(sem);
         assertNotNull(sem.getYear());
         assertNotNull(sem.getTerm());
-        assertTrue(sem.getTerm().equals("3") || sem.getTerm().equals("12"),
-            "学期编码应为 3 或 12，实际: " + sem.getTerm());
+        assertTrue(sem.getTerm() == com.gxu.jwxt.model.Term.AUTUMN
+                || sem.getTerm() == com.gxu.jwxt.model.Term.SPRING,
+            "学期应为 AUTUMN 或 SPRING，实际: " + sem.getTerm());
     }
 
     @Test

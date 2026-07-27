@@ -53,7 +53,7 @@ public class JwxtClient {
     // ========== 通用查询 ==========
 
     /**
-     * 通用 POST 查询
+     * 通用 POST 查询，返回 Map
      */
     public Map<String, Object> query(String path, Map<String, String> data) throws IOException {
         session.ensureLogin();
@@ -63,6 +63,15 @@ public class JwxtClient {
         } catch (JsonSyntaxException e) {
             return Map.of("_html", body);
         }
+    }
+
+    /**
+     * 通用 POST 查询，返回指定类型
+     */
+    public <T> T query(String path, Map<String, String> data, Class<T> type) throws IOException {
+        session.ensureLogin();
+        String body = session.post(path, data);
+        return gson.fromJson(body, type);
     }
 
     /**

@@ -1,12 +1,12 @@
 package com.gxu.jwxt.module;
 
 import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
 import com.gxu.jwxt.JwxtSession;
 import com.gxu.jwxt.model.PageQuery;
+import com.gxu.jwxt.model.ScheduleResponse;
+import com.gxu.jwxt.model.TeacherScheduleResponse;
 
 import java.io.IOException;
-import java.lang.reflect.Type;
 import java.util.Map;
 
 /** 课表查询模块 */
@@ -14,7 +14,6 @@ public class ScheduleModule {
 
     private static final String GNMKDM = "N2151";
     private static final Gson gson = new Gson();
-    private static final Type MAP_TYPE = new TypeToken<Map<String, Object>>() {}.getType();
 
     private final JwxtSession session;
 
@@ -36,7 +35,7 @@ public class ScheduleModule {
     /**
      * 个人课表数据
      */
-    public Map<String, Object> personal(String year, String term) throws IOException {
+    public ScheduleResponse personal(String year, String term) throws IOException {
         session.ensureLogin();
         PageQuery q = new PageQuery();
         Map<String, String> data = q.toMap(Map.of("xnm", year, "xqm", term));
@@ -44,13 +43,13 @@ public class ScheduleModule {
             "/jwglxt/kbcx/xskbcx_cxXsgrkb.html?gnmkdm=" + GNMKDM,
             data
         );
-        return gson.fromJson(body, MAP_TYPE);
+        return gson.fromJson(body, ScheduleResponse.class);
     }
 
     /**
      * 教师课表
      */
-    public Map<String, Object> teacher(String year, String term, String name) throws IOException {
+    public TeacherScheduleResponse teacher(String year, String term, String name) throws IOException {
         session.ensureLogin();
         PageQuery q = new PageQuery();
         Map<String, String> data = q.toMap(Map.of(
@@ -62,7 +61,7 @@ public class ScheduleModule {
             "/jwglxt/kbcx/jskbcx_cxJsKb.html?gnmkdm=" + GNMKDM,
             data
         );
-        return gson.fromJson(body, MAP_TYPE);
+        return gson.fromJson(body, TeacherScheduleResponse.class);
     }
 
     /**

@@ -2,16 +2,14 @@ package com.gxu.jwxt;
 
 import com.gxu.jwxt.exceptions.LoginException;
 import com.gxu.jwxt.exceptions.NotLoggedInException;
+import com.gxu.jwxt.model.*;
 import org.junit.jupiter.api.*;
-
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class JwxtSessionTest {
 
-    // Use env vars or these hardcoded test credentials
     private static final String USERNAME = System.getenv().getOrDefault("JWXT_USERNAME", "REDACTED_STUDENT_ID");
     private static final String PASSWORD = System.getenv().getOrDefault("JWXT_PASSWORD", "REDACTED_PASSWORD");
     private static final String BASE_URL = System.getenv().getOrDefault("JWXT_BASE_URL", "https://jwxt2018.gxu.edu.cn");
@@ -49,21 +47,35 @@ class JwxtSessionTest {
 
     @Test
     @Order(4)
-    @DisplayName("课表 - personal() 返回非空 Map")
+    @DisplayName("课表 - personal() 返回结构化数据")
     void testSchedulePersonal() {
         assertDoesNotThrow(() -> {
-            Map<String, Object> data = client.schedule().personal("2025", "12");
+            ScheduleResponse data = client.schedule().personal("2024", "12");
             assertNotNull(data, "个人课表数据不应为 null");
+            assertNotNull(data.getStudentInfo(), "学生信息不应为 null");
+            assertNotNull(data.getStudentInfo().getName(), "学生姓名不应为 null");
+            assertNotNull(data.getCourses(), "课程列表不应为 null");
+            assertFalse(data.getCourses().isEmpty(), "课程列表不应为空");
+
+            CourseEntry first = data.getCourses().get(0);
+            assertNotNull(first.getCourseName(), "课程名不应为 null");
+            assertNotNull(first.getTeacherName(), "教师名不应为 null");
         });
     }
 
     @Test
     @Order(5)
-    @DisplayName("课表 - teacher() 返回非空 Map")
+    @DisplayName("课表 - teacher() 返回结构化数据")
     void testScheduleTeacher() {
         assertDoesNotThrow(() -> {
-            Map<String, Object> data = client.schedule().teacher("2025", "12", "");
+            TeacherScheduleResponse data = client.schedule().teacher("2024", "12", "");
             assertNotNull(data, "教师课表数据不应为 null");
+            assertNotNull(data.getScheduleTypes(), "学时类型列表不应为 null");
+            assertFalse(data.getScheduleTypes().isEmpty(), "学时类型不应为空");
+
+            ScheduleType st = data.getScheduleTypes().get(0);
+            assertNotNull(st.getCode());
+            assertNotNull(st.getName());
         });
     }
 
@@ -91,26 +103,41 @@ class JwxtSessionTest {
 
     @Test
     @Order(8)
+    @DisplayName("泛型 query() 返回指定类型")
+    void testGenericQuery() {
+        assertDoesNotThrow(() -> {
+            PageQuery q = new PageQuery();
+            ScheduleResponse data = client.query(
+                "/jwglxt/kbcx/xskbcx_cxXsgrkb.html?gnmkdm=N2151",
+                q.toMap(java.util.Map.of("xnm", "2024", "xqm", "12")),
+                ScheduleResponse.class
+            );
+            assertNotNull(data);
+            assertNotNull(data.getStudentInfo());
+        });
+    }
+
+    @Test
+    @Order(9)
     @DisplayName("currentSemester() 返回当前学期")
     void testCurrentSemester() {
         var sem = JwxtClient.currentSemester();
         assertNotNull(sem);
         assertNotNull(sem.getYear());
         assertNotNull(sem.getTerm());
-        // term must be either "3" or "12"
         assertTrue(sem.getTerm().equals("3") || sem.getTerm().equals("12"),
             "学期编码应为 3 或 12，实际: " + sem.getTerm());
     }
 
     @Test
-    @Order(9)
+    @Order(10)
     @DisplayName("getUsername() 返回正确的用户名")
     void testGetUsername() {
         assertEquals(USERNAME, client.getUsername());
     }
 
     @Test
-    @Order(10)
+    @Order(11)
     @DisplayName("toString() 包含用户名")
     void testToString() {
         String s = client.toString();
@@ -118,7 +145,7 @@ class JwxtSessionTest {
     }
 
     @Test
-    @Order(11)
+    @Order(12)
     @DisplayName("未登录时调用 schedule 应抛出 NotLoggedInException")
     void testNotLoggedInThrows() {
         JwxtClient c = new JwxtClient("user", "pass");
@@ -128,7 +155,7 @@ class JwxtSessionTest {
     }
 
     @Test
-    @Order(12)
+    @Order(13)
     @DisplayName("退出登录")
     void testLogout() {
         assertDoesNotThrow(() -> client.logout());

@@ -1,5 +1,6 @@
 plugins {
     id("java")
+    `maven-publish`
 }
 
 group = "com.gxu"
@@ -24,4 +25,14 @@ dependencies {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("maven") {
+            from(components["java"])
+            groupId = "com.gxu"
+            artifactId = "gxu-jwxt-client"
+        }
+    }
 }

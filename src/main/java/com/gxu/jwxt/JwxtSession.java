@@ -10,6 +10,9 @@ import okhttp3.*;
 import javax.crypto.Cipher;
 import java.io.IOException;
 import java.math.BigInteger;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.interfaces.RSAPublicKey;
@@ -18,12 +21,16 @@ import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 
-/** 教务系统核心客户端 */
+/** 教务系统核心客户端，管理 HTTP 会话、认证、RSA 加密 */
 public class JwxtSession {
+
+    private static final Logger LOG = Logger.getLogger(JwxtSession.class.getName());
 
     private static final String DEFAULT_BASE_URL = "https://jwxt2018.gxu.edu.cn";
     private static final String LOGIN_PATH = "/jwglxt/xtgl/login_slogin.html";
@@ -34,17 +41,28 @@ public class JwxtSession {
     private final String username;
     private final String password;
     private final OkHttpClient httpClient;
+    private final RetryConfig retryConfig;
     private final AtomicBoolean loggedIn = new AtomicBoolean(false);
     private String csrfToken;
 
+    /** 上一次请求完成的时间戳，用于限流 */
+    private volatile long lastRequestTime = 0;
+
+    // ========== 构造 ==========
+
     public JwxtSession(String username, String password) {
-        this(username, password, DEFAULT_BASE_URL);
+        this(username, password, DEFAULT_BASE_URL, RetryConfig.DEFAULT);
     }
 
     public JwxtSession(String username, String password, String baseUrl) {
+        this(username, password, baseUrl, RetryConfig.DEFAULT);
+    }
+
+    public JwxtSession(String username, String password, String baseUrl, RetryConfig retryConfig) {
         this.username = username;
         this.password = password;
         this.baseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URL;
+        this.retryConfig = retryConfig != null ? retryConfig : RetryConfig.DEFAULT;
 
         CookieJar cookieJar = new CookieJar() {
             private final java.util.concurrent.CopyOnWriteArrayList<Cookie> cookies = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -83,74 +101,296 @@ public class JwxtSession {
         return baseUrl + "/jwglxt/xtgl/index_initMenu.html";
     }
 
+    // ---- 请求头部构建 ----
+
+    private Request.Builder baseRequestBuilder(String path) {
+        return new Request.Builder()
+                .url(fullUrl(path))
+                .header("Referer", referer())
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9")
+                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+    }
+
+    // ---- 限流 ----
+
     /**
-     * GET 请求
+     * 请求间限流：确保两次请求至少间隔 {@link RetryConfig#getMinRequestInterval()} 毫秒。
+     */
+    private void rateLimit() {
+        long interval = retryConfig.getMinRequestInterval();
+        if (interval <= 0) return;
+        long now = System.currentTimeMillis();
+        long elapsed = now - lastRequestTime;
+        if (elapsed < interval) {
+            sleep(interval - elapsed);
+        }
+        lastRequestTime = System.currentTimeMillis();
+    }
+
+    // ---- 重试判断 ----
+
+    /**
+     * 判断 IOException 是否应重试（超时、连接异常、DNS 错误）。
+     * 模仿 luoguClient {@code shouldRetry}。
+     */
+    private boolean shouldRetry(IOException e) {
+        if (e instanceof SocketTimeoutException) return true;
+        if (e instanceof ConnectException) return true;
+        if (e instanceof UnknownHostException) return true;
+        // 检查嵌套的 cause（如 SSLException 包裹的 ConnectException）
+        Throwable cause = e.getCause();
+        while (cause != null) {
+            if (cause instanceof SocketTimeoutException) return true;
+            if (cause instanceof ConnectException) return true;
+            if (cause instanceof UnknownHostException) return true;
+            cause = cause.getCause();
+        }
+        String msg = e.getMessage();
+        if (msg != null) {
+            String lower = msg.toLowerCase();
+            if (lower.contains("timeout") || lower.contains("timed out")) return true;
+        }
+        return false;
+    }
+
+    // ---- Session 过期检测 ----
+
+    /**
+     * 判断响应体是否为教务系统登录页面（说明 session 已过期被重定向）。
+     *
+     * <p>教务系统 session 过期后，所有需要认证的请求会被 302 重定向到登录页。
+     * OkHttp 自动跟随重定向，最终拿到的是登录页 HTML。</p>
+     *
+     * <p>通过检测登录页独有的特征字段来判断，避免对登录流程本身的误判。</p>
+     */
+    private boolean isLoginPage(String body, String requestedPath) {
+        if (body == null || body.isEmpty()) return false;
+        // 排除有意访问登录流程的路径
+        if (requestedPath.contains("login_slogin")
+                || requestedPath.contains("login_getPublicKey")
+                || requestedPath.contains("login_logoutAccount")) {
+            return false;
+        }
+        // 登录页特征：同时包含 csrftoken 隐藏域和 yhm 用户名字段
+        return body.contains("name=\"csrftoken\"") && body.contains("name=\"yhm\"");
+    }
+
+    // ---- 工具 ----
+
+    private void sleep(long ms) {
+        if (ms <= 0) return;
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    // ---- 网络层重试（网络错误 / 5xx）----
+
+    /**
+     * GET 内部实现：仅处理网络层重试（网络错误 + 5xx），不处理 session 过期。
+     */
+    private String getInternal(String path) throws IOException {
+        String label = "GET " + path;
+        IOException lastError = null;
+
+        for (int attempt = 0; attempt <= retryConfig.getMaxRetries(); attempt++) {
+            rateLimit();
+
+            Request req = baseRequestBuilder(path).build();
+
+            try {
+                Response resp = httpClient.newCall(req).execute();
+                if (resp.isSuccessful()) {
+                    String body = resp.body() != null ? resp.body().string() : "";
+                    lastRequestTime = System.currentTimeMillis();
+                    return body;
+                }
+
+                int code = resp.code();
+                resp.close();
+
+                // 5xx 服务端错误 → 重试
+                if (code >= 500 && attempt < retryConfig.getMaxRetries()) {
+                    lastError = new IOException("HTTP " + code + " for " + label);
+                    logRetry(attempt, label, lastError);
+                    sleep(retryConfig.getBackoffMs(attempt));
+                    continue;
+                }
+
+                throw new IOException("HTTP " + code + " for " + path);
+
+            } catch (IOException e) {
+                if (shouldRetry(e) && attempt < retryConfig.getMaxRetries()) {
+                    lastError = e;
+                    logRetry(attempt, label, e);
+                    sleep(retryConfig.getBackoffMs(attempt));
+                    continue;
+                }
+                throw e;
+            }
+        }
+
+        throw new IOException("Max retries (" + retryConfig.getMaxRetries()
+                + ") exceeded for " + label, lastError);
+    }
+
+    /**
+     * POST 内部实现：仅处理网络层重试（网络错误 + 5xx），不处理 session 过期。
+     */
+    private String postInternal(String path, java.util.Map<String, String> data) throws IOException {
+        String label = "POST " + path;
+        IOException lastError = null;
+
+        for (int attempt = 0; attempt <= retryConfig.getMaxRetries(); attempt++) {
+            rateLimit();
+
+            // 每次重试重建 FormBody（body 在上一次已被消费）
+            FormBody.Builder fb = new FormBody.Builder();
+            if (data != null) {
+                data.forEach(fb::add);
+            }
+
+            Request req = baseRequestBuilder(path)
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .post(fb.build())
+                    .build();
+
+            try {
+                Response resp = httpClient.newCall(req).execute();
+                if (resp.isSuccessful()) {
+                    String body = resp.body() != null ? resp.body().string() : "";
+                    lastRequestTime = System.currentTimeMillis();
+                    return body;
+                }
+
+                int code = resp.code();
+                resp.close();
+
+                if (code >= 500 && attempt < retryConfig.getMaxRetries()) {
+                    lastError = new IOException("HTTP " + code + " for " + label);
+                    logRetry(attempt, label, lastError);
+                    sleep(retryConfig.getBackoffMs(attempt));
+                    continue;
+                }
+
+                throw new IOException("HTTP " + code + " for " + path);
+
+            } catch (IOException e) {
+                if (shouldRetry(e) && attempt < retryConfig.getMaxRetries()) {
+                    lastError = e;
+                    logRetry(attempt, label, e);
+                    sleep(retryConfig.getBackoffMs(attempt));
+                    continue;
+                }
+                throw e;
+            }
+        }
+
+        throw new IOException("Max retries (" + retryConfig.getMaxRetries()
+                + ") exceeded for " + label, lastError);
+    }
+
+    // ---- 公开 HTTP 方法（网络层重试 + session 过期自动重登录）----
+
+    /**
+     * GET 请求（网络层重试 + session 过期自动重登录并重试一次）。
      */
     public String get(String path) throws IOException {
-        Request req = new Request.Builder()
-                .url(fullUrl(path))
-                .header("Referer", referer())
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9")
-                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-                .build();
-        try (Response resp = httpClient.newCall(req).execute()) {
-            if (!resp.isSuccessful()) {
-                throw new IOException("HTTP " + resp.code() + " for " + path);
-            }
-            return resp.body() != null ? resp.body().string() : "";
+        String body = getInternal(path);
+        if (isLoginPage(body, path)) {
+            LOG.info("Session expired, re-logging in before retrying GET " + path);
+            relogin();
+            body = getInternal(path);
         }
+        return body;
     }
 
     /**
-     * POST 请求 (form-urlencoded)
+     * POST 请求 (form-urlencoded)。
+     * 网络层重试 + session 过期自动重登录并重试一次。
      */
     public String post(String path, java.util.Map<String, String> data) throws IOException {
-        FormBody.Builder fb = new FormBody.Builder();
-        if (data != null) {
-            data.forEach(fb::add);
+        String body = postInternal(path, data);
+        if (isLoginPage(body, path)) {
+            LOG.info("Session expired, re-logging in before retrying POST " + path);
+            relogin();
+            body = postInternal(path, data);
         }
-        Request req = new Request.Builder()
-                .url(fullUrl(path))
-                .header("Referer", referer())
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9")
-                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .post(fb.build())
-                .build();
-        try (Response resp = httpClient.newCall(req).execute()) {
-            if (!resp.isSuccessful()) {
-                throw new IOException("HTTP " + resp.code() + " for " + path);
-            }
-            return resp.body() != null ? resp.body().string() : "";
-        }
+        return body;
     }
 
     /**
-     * POST 请求 (form-urlencoded)，返回完整 Response 对象。
-     * 用于需要检查最终重定向 URL 的场景（如登录成功检测）。
+     * POST 请求，返回完整 Response 对象。
+     * 网络层重试 + session 过期自动重登录并重试一次。
      */
     private Response postWithResponse(String path, java.util.Map<String, String> data) throws IOException {
-        FormBody.Builder fb = new FormBody.Builder();
-        if (data != null) {
-            data.forEach(fb::add);
+        String label = "POST (stream) " + path;
+        IOException lastError = null;
+
+        for (int attempt = 0; attempt <= retryConfig.getMaxRetries(); attempt++) {
+            rateLimit();
+
+            FormBody.Builder fb = new FormBody.Builder();
+            if (data != null) {
+                data.forEach(fb::add);
+            }
+
+            Request req = baseRequestBuilder(path)
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .post(fb.build())
+                    .build();
+
+            try {
+                Response resp = httpClient.newCall(req).execute();
+                if (resp.isSuccessful()) {
+                    lastRequestTime = System.currentTimeMillis();
+                    // 读取 body 检测 session 过期
+                    String body = resp.peekBody(Long.MAX_VALUE).string();
+                    if (isLoginPage(body, path)) {
+                        resp.close();
+                        LOG.info("Session expired, re-logging in before retrying POST " + path);
+                        relogin();
+                        // 递减 attempt 以重新执行（不计入网络层重试次数）
+                        attempt = -1;
+                        continue;
+                    }
+                    return resp;
+                }
+
+                int code = resp.code();
+                resp.close();
+
+                if (code >= 500 && attempt < retryConfig.getMaxRetries()) {
+                    lastError = new IOException("HTTP " + code + " for " + label);
+                    logRetry(attempt, label, lastError);
+                    sleep(retryConfig.getBackoffMs(attempt));
+                    continue;
+                }
+
+                throw new IOException("HTTP " + code + " for " + path);
+
+            } catch (IOException e) {
+                if (shouldRetry(e) && attempt < retryConfig.getMaxRetries()) {
+                    lastError = e;
+                    logRetry(attempt, label, e);
+                    sleep(retryConfig.getBackoffMs(attempt));
+                    continue;
+                }
+                throw e;
+            }
         }
-        Request req = new Request.Builder()
-                .url(fullUrl(path))
-                .header("Referer", referer())
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9")
-                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .post(fb.build())
-                .build();
-        Response resp = httpClient.newCall(req).execute();
-        if (!resp.isSuccessful()) {
-            resp.close();
-            throw new IOException("HTTP " + resp.code() + " for " + path);
-        }
-        return resp;
+
+        throw new IOException("Max retries (" + retryConfig.getMaxRetries()
+                + ") exceeded for " + label, lastError);
+    }
+
+    private void logRetry(int attempt, String label, IOException e) {
+        LOG.log(Level.WARNING,
+                "Retry " + (attempt + 1) + "/" + retryConfig.getMaxRetries()
+                        + " for " + label + ": " + e.getMessage());
     }
 
     // ========== RSA ==========
@@ -181,14 +421,29 @@ public class JwxtSession {
     // ========== 认证 ==========
 
     /**
-     * 登录教务系统
+     * 首次登录教务系统（如果已登录则跳过）。
      */
     public void login() throws LoginException {
         if (loggedIn.get()) return;
+        doLogin();
+    }
 
+    /**
+     * 强制重新登录，无视当前登录状态。
+     * 用于 session 过期后的自动恢复。
+     */
+    public void relogin() throws LoginException {
+        loggedIn.set(false);
+        doLogin();
+    }
+
+    /**
+     * 执行登录流程。
+     */
+    private void doLogin() throws LoginException {
         try {
-            // 1. 获取 csrftoken
-            String loginHtml = get(LOGIN_PATH);
+            // 1. 获取 csrftoken（登录页不经过 session 检查，直接走内部方法）
+            String loginHtml = getInternal(LOGIN_PATH);
             Document doc = Jsoup.parse(loginHtml);
             var csrfInput = doc.selectFirst("input[name=csrftoken]");
             this.csrfToken = csrfInput != null ? csrfInput.attr("value") : "";
@@ -216,7 +471,7 @@ public class JwxtSession {
             // 4. 初始化会话
             loggedIn.set(true);
             ts = System.currentTimeMillis();
-            get(INIT_MENU_PATH + "?jsdm=xs&_t=" + ts + "&echarts=1");
+            getInternal(INIT_MENU_PATH + "?jsdm=xs&_t=" + ts + "&echarts=1");
 
         } catch (LoginException e) {
             throw e;
@@ -242,6 +497,7 @@ public class JwxtSession {
     public String getUsername() { return username; }
     public OkHttpClient getHttpClient() { return httpClient; }
     public String getBaseUrl() { return baseUrl; }
+    public RetryConfig getRetryConfig() { return retryConfig; }
 
     // ========== 内部 ==========
 

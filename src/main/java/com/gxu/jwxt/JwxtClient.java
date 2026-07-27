@@ -24,11 +24,15 @@ public class JwxtClient {
     private final ProfileModule profile;
 
     public JwxtClient(String username, String password) {
-        this(username, password, null);
+        this(username, password, null, RetryConfig.DEFAULT);
     }
 
     public JwxtClient(String username, String password, String baseUrl) {
-        this.session = new JwxtSession(username, password, baseUrl);
+        this(username, password, baseUrl, RetryConfig.DEFAULT);
+    }
+
+    public JwxtClient(String username, String password, String baseUrl, RetryConfig retryConfig) {
+        this.session = new JwxtSession(username, password, baseUrl, retryConfig);
         this.schedule = new ScheduleModule(this.session);
         this.profile = new ProfileModule(this.session);
     }
@@ -93,6 +97,10 @@ public class JwxtClient {
 
     public static Semester currentSemester() {
         return Semester.current();
+    }
+
+    public RetryConfig getRetryConfig() {
+        return session.getRetryConfig();
     }
 
     public String getUsername() {

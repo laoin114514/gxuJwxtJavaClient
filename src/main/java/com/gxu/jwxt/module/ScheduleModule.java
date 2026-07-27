@@ -2,12 +2,14 @@ package com.gxu.jwxt.module;
 
 import com.google.gson.Gson;
 import com.gxu.jwxt.JwxtSession;
+import com.gxu.jwxt.model.ClassScheduleResponse;
 import com.gxu.jwxt.model.PageQuery;
 import com.gxu.jwxt.model.ScheduleResponse;
 import com.gxu.jwxt.model.TeacherScheduleResponse;
 import com.gxu.jwxt.model.Term;
 
 import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /** 课表查询模块 */
@@ -92,5 +94,53 @@ public class ScheduleModule {
         session.ensureLogin();
         long ts = System.currentTimeMillis();
         return session.get("/jwglxt/kbcx/xskbqr_cxXskbqrIndex.html?gnmkdm=N2158&time=" + ts);
+    }
+
+    // ========== 班级课表 ==========
+
+    private static final String CLASS_SCHEDULE_GNMKDM = "N214505";
+
+    /**
+     * 班级课表详情（结构化数据）。
+     *
+     * @param year      学年，如 {@code "2025"}
+     * @param term      学期，{@link Term#AUTUMN} 或 {@link Term#SPRING}
+     * @param classId   班级 ID，如 {@code "24071101"}
+     * @param gradeCode 年级代码，如 {@code "2024"}
+     * @param majorCode 专业号 ID，如 {@code "0711"}
+     * @return 班级课表数据
+     */
+    public ClassScheduleResponse classDetail(String year, Term term, String classId,
+                                              String gradeCode, String majorCode) throws IOException {
+        return classDetail(year, term.code(), classId, gradeCode, majorCode);
+    }
+
+    /**
+     * 班级课表详情（结构化数据，使用学期编码）。
+     *
+     * @deprecated 使用 {@link #classDetail(String, Term, String, String, String)}
+     */
+    @Deprecated
+    public ClassScheduleResponse classDetail(String year, String termCode, String classId,
+                                              String gradeCode, String majorCode) throws IOException {
+        session.ensureLogin();
+        PageQuery q = new PageQuery();
+        Map<String, String> data = q.toMap(new LinkedHashMap<>() {{
+            put("xnm", year);
+            put("xqm", termCode);
+            put("bh_id", classId);
+            put("njdm_id", gradeCode);
+            put("zyh_id", majorCode);
+            put("xqh_id", "1");
+            put("tjkbzdm", "1");
+            put("tjkbzxsdm", "0");
+            put("kzlx", "ck");
+            put("sfcxxqh", "1");
+        }});
+        String body = session.post(
+            "/jwglxt/kbdy/bjkbdy_cxBjKb.html?gnmkdm=" + CLASS_SCHEDULE_GNMKDM,
+            data
+        );
+        return gson.fromJson(body, ClassScheduleResponse.class);
     }
 }

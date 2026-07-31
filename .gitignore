@@ -30,3 +30,10 @@ hs_err_pid*
 Thumbs.db
 Desktop.ini
 
+
+# ====== Probe scripts (contain credentials) ======
+scripts/
+probe/
+
+# ====== Probe responses (may contain PII) ======
+probe/responses/

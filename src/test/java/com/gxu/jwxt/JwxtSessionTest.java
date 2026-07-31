@@ -10,9 +10,17 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class JwxtSessionTest {
 
-    private static final String USERNAME = System.getenv().getOrDefault("JWXT_USERNAME", "REDACTED_STUDENT_ID");
-    private static final String PASSWORD = System.getenv().getOrDefault("JWXT_PASSWORD", "REDACTED_PASSWORD");
+    private static final String USERNAME = requireEnv("JWXT_USERNAME");
+    private static final String PASSWORD = requireEnv("JWXT_PASSWORD");
     private static final String BASE_URL = System.getenv().getOrDefault("JWXT_BASE_URL", "https://jwxt2018.gxu.edu.cn");
+
+    private static String requireEnv(String name) {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException("运行集成测试需要设置环境变量 " + name);
+        }
+        return value;
+    }
 
     private static JwxtClient client;
 

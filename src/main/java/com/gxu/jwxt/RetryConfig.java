@@ -26,8 +26,14 @@ public class RetryConfig {
     private final IntFunction<Long> backoffFn;  // attempt (0-based) → delay ms
     private final long minRequestInterval;       // ms
 
-    /** 默认配置：最多 3 次重试，指数退避 1s/2s/4s，请求间隔 500ms */
-    public static final RetryConfig DEFAULT = new RetryConfig(3, RetryConfig::defaultBackoff, 500);
+    /**
+     * 默认配置：最多 3 次重试，指数退避 1s/2s/4s，请求起始间隔 1.2s。
+     *
+     * <p>该间隔来自 2026-07-31 的全接口实测：使用单个会话、每次请求间隔
+     * 1.2 秒时未触发限流。教务系统未公布固定阈值，因此它是保守的默认值，
+     * 不是服务端承诺的最大请求频率。</p>
+     */
+    public static final RetryConfig DEFAULT = new RetryConfig(3, RetryConfig::defaultBackoff, 1_200);
 
     /** 不重试、不限流 */
     public static final RetryConfig NO_RETRY = new RetryConfig(0, a -> 0L, 0);

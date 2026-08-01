@@ -10,6 +10,17 @@ import static org.junit.jupiter.api.Assertions.*;
 class JwxtSessionTest {
 
     @Test
+    void defaultRetryConfigUsesVerifiedRequestInterval() {
+        RetryConfig config = RetryConfig.DEFAULT;
+
+        assertEquals(3, config.getMaxRetries());
+        assertEquals(1_200, config.getMinRequestInterval());
+        assertEquals(1_000, config.getBackoffMs(0));
+        assertEquals(2_000, config.getBackoffMs(1));
+        assertEquals(4_000, config.getBackoffMs(2));
+    }
+
+    @Test
     void currentSemesterReturnsSupportedTerm() {
         var semester = JwxtClient.currentSemester();
         assertNotNull(semester.getYear());

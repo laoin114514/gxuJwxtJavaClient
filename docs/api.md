@@ -1067,7 +1067,7 @@ POST /jwglxt/jxzxjhgl/jxzxjhkcxx_cxJxzxjhkcxxIndex.html?doType=query&gnmkdm=N153
 参数: 标准分页 + xnm=2025&xqm=12 (+ jxzxjhxx_id 筛选)
 ```
 
-前端页面确认该路径用于计划内课程列表；未传 `jxzxjhxx_id` 时为空。带有效计划 ID 的成功响应结构尚未单独实测，不应依赖“标准分页”之外的未记录字段。
+前端页面确认该路径用于计划内课程列表；未传 `jxzxjhxx_id` 时为空。2026-08-01 使用对应年级和专业的有效计划 ID 复测，仍返回空分页结果（`totalResult: 0`），因此尚不能确认课程条目字段；客户端不应封装为带字段模型的接口。
 
 ### 10.3 计划详情/课程要求
 

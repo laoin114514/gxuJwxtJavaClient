@@ -16,6 +16,8 @@ build/
 *.swo
 *~
 test
+!src/test/
+!src/test/**
 
 # ====== Java ======
 out/

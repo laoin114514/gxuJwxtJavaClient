@@ -73,19 +73,27 @@ public class JwxtSession {
                 for (Cookie c : list) {
                     cookies.removeIf(existing ->
                         existing.name().equals(c.name()) &&
-                        (existing.domain() == null || existing.domain().equals(c.domain())));
+                        existing.domain().equals(c.domain()) &&
+                        existing.path().equals(c.path()));
                     cookies.add(c);
                 }
             }
 
             @Override
             public List<Cookie> loadForRequest(HttpUrl url) {
-                return new java.util.ArrayList<>(cookies);
+                List<Cookie> matched = new java.util.ArrayList<>();
+                for (Cookie cookie : cookies) {
+                    if (cookie.matches(url)) {
+                        matched.add(cookie);
+                    }
+                }
+                return matched;
             }
         };
 
         this.httpClient = new OkHttpClient.Builder()
                 .cookieJar(cookieJar)
+                .protocols(List.of(Protocol.HTTP_1_1))
                 .followRedirects(true)
                 .followSslRedirects(true)
                 .build();
@@ -104,12 +112,12 @@ public class JwxtSession {
 
     // ---- 请求头部构建 ----
 
-    private Request.Builder baseRequestBuilder(String path) {
+    private Request.Builder baseRequestBuilder(String path, String refererPath) {
         return new Request.Builder()
                 .url(fullUrl(path))
-                .header("Referer", referer())
+                .header("Referer", refererPath != null ? fullUrl(refererPath) : referer())
                 .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8")
                 .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
     }
 
@@ -194,13 +202,17 @@ public class JwxtSession {
      * GET 内部实现：仅处理网络层重试（网络错误 + 5xx），不处理 session 过期。
      */
     private String getInternal(String path) throws IOException {
+        return getInternal(path, null);
+    }
+
+    private String getInternal(String path, String refererPath) throws IOException {
         String label = "GET " + path;
         IOException lastError = null;
 
         for (int attempt = 0; attempt <= retryConfig.getMaxRetries(); attempt++) {
             rateLimit();
 
-            Request req = baseRequestBuilder(path).build();
+            Request req = baseRequestBuilder(path, refererPath).build();
 
             try {
                 Response resp = httpClient.newCall(req).execute();
@@ -242,6 +254,10 @@ public class JwxtSession {
      * POST 内部实现：仅处理网络层重试（网络错误 + 5xx），不处理 session 过期。
      */
     private String postInternal(String path, java.util.Map<String, String> data) throws IOException {
+        return postInternal(path, data, null);
+    }
+
+    private String postInternal(String path, java.util.Map<String, String> data, String refererPath) throws IOException {
         String label = "POST " + path;
         IOException lastError = null;
 
@@ -254,8 +270,8 @@ public class JwxtSession {
                 data.forEach(fb::add);
             }
 
-            Request req = baseRequestBuilder(path)
-                    .header("Content-Type", "application/x-www-form-urlencoded")
+            Request req = baseRequestBuilder(path, refererPath)
+                    .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
                     .post(fb.build())
                     .build();
 
@@ -302,7 +318,14 @@ public class JwxtSession {
      * @throws SessionExpiredException 如果响应内容为登录页（session 已过期）
      */
     public String get(String path) throws IOException {
-        String body = getInternal(path);
+        return get(path, null);
+    }
+
+    /**
+     * GET 请求，使用所属功能页面作为 Referer。
+     */
+    public String get(String path, String refererPath) throws IOException {
+        String body = getInternal(path, refererPath);
         if (isLoginPage(body, path)) {
             loggedIn.set(false);
             throw new SessionExpiredException(path);
@@ -317,7 +340,14 @@ public class JwxtSession {
      * @throws SessionExpiredException 如果响应内容为登录页（session 已过期）
      */
     public String post(String path, java.util.Map<String, String> data) throws IOException {
-        String body = postInternal(path, data);
+        return post(path, data, null);
+    }
+
+    /**
+     * POST 表单请求，使用所属功能页面作为 Referer。
+     */
+    public String post(String path, java.util.Map<String, String> data, String refererPath) throws IOException {
+        String body = postInternal(path, data, refererPath);
         if (isLoginPage(body, path)) {
             loggedIn.set(false);
             throw new SessionExpiredException(path);
@@ -341,8 +371,9 @@ public class JwxtSession {
                 data.forEach(fb::add);
             }
 
-            Request req = baseRequestBuilder(path)
-                    .header("Content-Type", "application/x-www-form-urlencoded")
+            Request req = baseRequestBuilder(path, null)
+                    .removeHeader("Referer")
+                    .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
                     .post(fb.build())
                     .build();
 

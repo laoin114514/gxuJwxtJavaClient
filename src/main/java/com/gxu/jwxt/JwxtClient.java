@@ -1,27 +1,34 @@
 package com.gxu.jwxt;
 
-import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
-import com.gxu.jwxt.exceptions.LoginException;
 import com.gxu.jwxt.model.Semester;
-import com.gxu.jwxt.module.ScheduleModule;
+import com.gxu.jwxt.exceptions.LoginException;
 import com.gxu.jwxt.module.ProfileModule;
+import com.gxu.jwxt.module.ScheduleModule;
+import com.gxu.jwxt.module.GradeModule;
+import com.gxu.jwxt.module.ExamModule;
+import com.gxu.jwxt.module.ClassroomModule;
+import com.gxu.jwxt.module.SelectionModule;
+import com.gxu.jwxt.module.TeachingPlanModule;
+import com.gxu.jwxt.module.OnlineLearningModule;
+import com.gxu.jwxt.module.DictionaryModule;
+import com.gxu.jwxt.module.MenuModule;
 
 import java.io.IOException;
-import java.lang.reflect.Type;
-import java.util.Map;
-
-import com.google.gson.JsonSyntaxException;
 
 /** 教务系统客户端门面 */
 public class JwxtClient {
 
-    private static final Gson gson = new Gson();
-    private static final Type MAP_TYPE = new TypeToken<Map<String, Object>>() {}.getType();
-
     private final JwxtSession session;
     private final ScheduleModule schedule;
     private final ProfileModule profile;
+    private final GradeModule grades;
+    private final ExamModule exams;
+    private final ClassroomModule classrooms;
+    private final SelectionModule selections;
+    private final TeachingPlanModule teachingPlans;
+    private final OnlineLearningModule onlineLearning;
+    private final DictionaryModule dictionary;
+    private final MenuModule menu;
 
     public JwxtClient(String username, String password) {
         this(username, password, null, RetryConfig.DEFAULT);
@@ -35,6 +42,14 @@ public class JwxtClient {
         this.session = new JwxtSession(username, password, baseUrl, retryConfig);
         this.schedule = new ScheduleModule(this.session);
         this.profile = new ProfileModule(this.session);
+        this.grades = new GradeModule(this.session);
+        this.exams = new ExamModule(this.session);
+        this.classrooms = new ClassroomModule(this.session);
+        this.selections = new SelectionModule(this.session);
+        this.teachingPlans = new TeachingPlanModule(this.session);
+        this.onlineLearning = new OnlineLearningModule(this.session);
+        this.dictionary = new DictionaryModule(this.session);
+        this.menu = new MenuModule(this.session);
     }
 
     // ========== 认证 ==========
@@ -70,36 +85,37 @@ public class JwxtClient {
         return profile;
     }
 
-    // ========== 通用查询 ==========
-
-    /**
-     * 通用 POST 查询，返回 Map
-     */
-    public Map<String, Object> query(String path, Map<String, String> data) throws IOException {
-        session.ensureLogin();
-        String body = session.post(path, data);
-        try {
-            return gson.fromJson(body, MAP_TYPE);
-        } catch (JsonSyntaxException e) {
-            return Map.of("_html", body);
-        }
+    public GradeModule grades() {
+        return grades;
     }
 
-    /**
-     * 通用 POST 查询，返回指定类型
-     */
-    public <T> T query(String path, Map<String, String> data, Class<T> type) throws IOException {
-        session.ensureLogin();
-        String body = session.post(path, data);
-        return gson.fromJson(body, type);
+    public ExamModule exams() {
+        return exams;
     }
 
-    /**
-     * 通用 GET 页面
-     */
-    public String queryPage(String path) throws IOException {
-        session.ensureLogin();
-        return session.get(path);
+    public ClassroomModule classrooms() {
+        return classrooms;
+    }
+
+    /** 选课确认与选课名单等只读查询。 */
+    public SelectionModule selections() {
+        return selections;
+    }
+
+    public TeachingPlanModule teachingPlans() {
+        return teachingPlans;
+    }
+
+    public OnlineLearningModule onlineLearning() {
+        return onlineLearning;
+    }
+
+    public DictionaryModule dictionary() {
+        return dictionary;
+    }
+
+    public MenuModule menu() {
+        return menu;
     }
 
     // ========== 辅助 ==========

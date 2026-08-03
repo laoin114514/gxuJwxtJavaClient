@@ -34,6 +34,15 @@ public class ScheduleResponse {
     @SerializedName("sfxsd")
     private String displayMode;                 // 是否显示地点
 
+    @SerializedName("xskbsfxstkzt")
+    private String scheduleStatus;              // 学生课表显示状态标记
+
+    @SerializedName("sxgykbbz")
+    private String scheduleMark;                // 课表标记
+
+    @SerializedName("xkkg")
+    private boolean courseSelectionOpen;        // 选课是否开放
+
     // ---- getters ----
 
     public StudentInfo getStudentInfo() { return studentInfo; }
@@ -43,6 +52,9 @@ public class ScheduleResponse {
     public List<ScheduleType> getScheduleTypes() { return scheduleTypes; }
     public String getTermFlag() { return termFlag; }
     public boolean isPracticeOpen() { return practiceOpen; }
+    public String getScheduleStatus() { return scheduleStatus; }
+    public String getScheduleMark() { return scheduleMark; }
+    public boolean isCourseSelectionOpen() { return courseSelectionOpen; }
 
     /**
      * 获取所有课程（理论 + 实践）

@@ -15,6 +15,8 @@ import com.gxu.jwxt.module.MenuModule;
 
 import java.io.IOException;
 
+import okhttp3.CookieJar;
+
 /** 教务系统客户端门面 */
 public class JwxtClient {
 
@@ -31,15 +33,30 @@ public class JwxtClient {
     private final MenuModule menu;
 
     public JwxtClient(String username, String password) {
-        this(username, password, null, RetryConfig.DEFAULT);
+        this(username, password, null, RetryConfig.DEFAULT, null);
     }
 
     public JwxtClient(String username, String password, String baseUrl) {
-        this(username, password, baseUrl, RetryConfig.DEFAULT);
+        this(username, password, baseUrl, RetryConfig.DEFAULT, null);
     }
 
     public JwxtClient(String username, String password, String baseUrl, RetryConfig retryConfig) {
-        this.session = new JwxtSession(username, password, baseUrl, retryConfig);
+        this(username, password, baseUrl, retryConfig, null);
+    }
+
+    /**
+     * 使用默认域名/重试配置，注入自定义 {@link CookieJar}（如持久化实现）。
+     */
+    public JwxtClient(String username, String password, CookieJar cookieJar) {
+        this(username, password, null, RetryConfig.DEFAULT, cookieJar);
+    }
+
+    /**
+     * 全参构造：可注入自定义 {@link CookieJar}（如持久化实现）。
+     * cookieJar 为 null 时使用默认的内存 CookieJar。
+     */
+    public JwxtClient(String username, String password, String baseUrl, RetryConfig retryConfig, CookieJar cookieJar) {
+        this.session = new JwxtSession(username, password, baseUrl, retryConfig, cookieJar);
         this.schedule = new ScheduleModule(this.session);
         this.profile = new ProfileModule(this.session);
         this.grades = new GradeModule(this.session);
@@ -65,6 +82,15 @@ public class JwxtClient {
      */
     public void relogin() throws LoginException {
         session.relogin();
+    }
+
+    /**
+     * 尝试用已持久化的 cookie 恢复会话（免完整登录）。
+     * 成功返回 true；无有效会话（无 cookie / 已过期 / 网络异常）返回 false，
+     * 此时需要调用 {@link #login()}。
+     */
+    public boolean resumeSession() {
+        return session.resumeSession();
     }
 
     public void logout() throws IOException {

@@ -52,20 +52,40 @@ public class JwxtSession {
     // ========== 构造 ==========
 
     public JwxtSession(String username, String password) {
-        this(username, password, DEFAULT_BASE_URL, RetryConfig.DEFAULT);
+        this(username, password, DEFAULT_BASE_URL, RetryConfig.DEFAULT, null);
     }
 
     public JwxtSession(String username, String password, String baseUrl) {
-        this(username, password, baseUrl, RetryConfig.DEFAULT);
+        this(username, password, baseUrl, RetryConfig.DEFAULT, null);
     }
 
     public JwxtSession(String username, String password, String baseUrl, RetryConfig retryConfig) {
+        this(username, password, baseUrl, retryConfig, null);
+    }
+
+    /**
+     * 全参构造：可注入自定义 {@link CookieJar}（如持久化实现）。
+     * cookieJar 为 null 时使用默认的内存 CookieJar。
+     */
+    public JwxtSession(String username, String password, String baseUrl, RetryConfig retryConfig, CookieJar cookieJar) {
         this.username = username;
         this.password = password;
         this.baseUrl = baseUrl != null ? baseUrl : DEFAULT_BASE_URL;
         this.retryConfig = retryConfig != null ? retryConfig : RetryConfig.DEFAULT;
 
-        CookieJar cookieJar = new CookieJar() {
+        this.httpClient = new OkHttpClient.Builder()
+                .cookieJar(cookieJar != null ? cookieJar : buildDefaultCookieJar())
+                .protocols(List.of(Protocol.HTTP_1_1))
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .build();
+    }
+
+    /**
+     * 默认内存 CookieJar：会话期间有效，进程退出后丢失。
+     */
+    private static CookieJar buildDefaultCookieJar() {
+        return new CookieJar() {
             private final java.util.concurrent.CopyOnWriteArrayList<Cookie> cookies = new java.util.concurrent.CopyOnWriteArrayList<>();
 
             @Override
@@ -90,13 +110,6 @@ public class JwxtSession {
                 return matched;
             }
         };
-
-        this.httpClient = new OkHttpClient.Builder()
-                .cookieJar(cookieJar)
-                .protocols(List.of(Protocol.HTTP_1_1))
-                .followRedirects(true)
-                .followSslRedirects(true)
-                .build();
     }
 
     // ========== HTTP ==========
@@ -477,6 +490,26 @@ public class JwxtSession {
     public void relogin() throws LoginException {
         loggedIn.set(false);
         doLogin();
+    }
+
+    /**
+     * 尝试用 CookieJar 中已持久化的 cookie 恢复会话（免完整登录）。
+     *
+     * <p>用轻量认证请求（initMenu）探测会话是否仍有效：
+     * 响应不是登录页 → 会话有效，标记已登录并返回 true；
+     * 否则（无 cookie / 已过期 / 网络异常）返回 false，由调用方决定走完整登录。</p>
+     */
+    public boolean resumeSession() {
+        if (loggedIn.get()) return true;
+        try {
+            get(INIT_MENU_PATH + "?jsdm=xs&_t=" + System.currentTimeMillis() + "&echarts=1");
+            loggedIn.set(true);
+            return true;
+        } catch (SessionExpiredException e) {
+            return false;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     /**

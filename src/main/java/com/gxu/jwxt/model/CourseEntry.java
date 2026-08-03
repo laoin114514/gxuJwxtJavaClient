@@ -24,6 +24,9 @@ public class CourseEntry {
     @SerializedName("xf")
     private String credits;             // 学分
 
+    @SerializedName("qqqh")
+    private String qqGroup;             // QQ群号（个人课表接口直接返回）
+
     @SerializedName("zhxs")
     private String totalHours;          // 总学时
 
@@ -140,6 +143,7 @@ public class CourseEntry {
     public String getCourseCategory() { return courseCategory; }
     public String getCourseNature() { return courseNature; }
     public String getCredits() { return credits; }
+    public String getQqGroup() { return qqGroup; }
     public String getTotalHours() { return totalHours; }
     public String getHourComposition() { return hourComposition; }
     public String getWeeklyHours() { return weeklyHours; }

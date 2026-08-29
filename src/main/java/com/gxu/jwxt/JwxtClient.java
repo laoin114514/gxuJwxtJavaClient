@@ -93,6 +93,17 @@ public class JwxtClient {
         return session.resumeSession();
     }
 
+    /**
+     * 抹除浏览器身份：清空全部 Cookie（含持久化的）+ 轮换 User-Agent。
+     *
+     * <p>用于登录触发服务端验证码保护后重置会话标识。登录流程内部
+     * 已自动执行「验证码失败 → 抹身份 → 重试一次」，本方法供上层
+     * 手动触发（如 UI 上的重试按钮）。</p>
+     */
+    public void clearBrowserIdentity() {
+        session.clearBrowserIdentity();
+    }
+
     public void logout() throws IOException {
         session.logout();
     }
@@ -156,6 +167,11 @@ public class JwxtClient {
 
     public String getUsername() {
         return session.getUsername();
+    }
+
+    /** 会话对象（包内可见，供测试使用）。 */
+    JwxtSession getSession() {
+        return session;
     }
 
     @Override

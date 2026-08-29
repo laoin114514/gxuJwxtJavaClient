@@ -2,6 +2,7 @@ package com.gxu.jwxt;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.gxu.jwxt.exceptions.CaptchaRequiredException;
 import com.gxu.jwxt.exceptions.LoginException;
 import com.gxu.jwxt.exceptions.NotLoggedInException;
 import com.gxu.jwxt.exceptions.SessionExpiredException;
@@ -21,6 +22,7 @@ import java.security.spec.RSAPublicKeySpec;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -38,6 +40,21 @@ public class JwxtSession {
     private static final String PUBLIC_KEY_PATH = "/jwglxt/xtgl/login_getPublicKey.html";
     private static final String INIT_MENU_PATH = "/jwglxt/xtgl/index_initMenu.html";
 
+    /**
+     * 真实桌面浏览器 User-Agent 池。
+     *
+     * <p>服务端在登录失败次数超限后强制验证码，疑似与会话标识相关；
+     * 触发验证码时轮换 UA 配合清空 Cookie 以重置身份。全部为完整、
+     * 现代浏览器的 UA（旧实现是截断值，容易被识别为脚本流量）。</p>
+     */
+    private static final String[] USER_AGENTS = {
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
+    };
+
     private final String baseUrl;
     private final String username;
     private final String password;
@@ -45,6 +62,7 @@ public class JwxtSession {
     private final RetryConfig retryConfig;
     private final AtomicBoolean loggedIn = new AtomicBoolean(false);
     private String csrfToken;
+    private volatile String userAgent = USER_AGENTS[0];
 
     /** 上一次请求完成的时间戳，用于限流 */
     private volatile long lastRequestTime = 0;
@@ -84,32 +102,42 @@ public class JwxtSession {
     /**
      * 默认内存 CookieJar：会话期间有效，进程退出后丢失。
      */
+    private static final class InMemoryCookieJar implements ClearableCookieJar {
+        private final CopyOnWriteArrayList<Cookie> cookies = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void saveFromResponse(HttpUrl url, List<Cookie> list) {
+            for (Cookie c : list) {
+                cookies.removeIf(existing ->
+                    existing.name().equals(c.name()) &&
+                    existing.domain().equals(c.domain()) &&
+                    existing.path().equals(c.path()));
+                cookies.add(c);
+            }
+        }
+
+        @Override
+        public List<Cookie> loadForRequest(HttpUrl url) {
+            List<Cookie> matched = new java.util.ArrayList<>();
+            for (Cookie cookie : cookies) {
+                if (cookie.matches(url)) {
+                    matched.add(cookie);
+                }
+            }
+            return matched;
+        }
+
+        @Override
+        public void clear() {
+            cookies.clear();
+        }
+    }
+
+    /**
+     * 默认内存 CookieJar：会话期间有效，进程退出后丢失。
+     */
     private static CookieJar buildDefaultCookieJar() {
-        return new CookieJar() {
-            private final java.util.concurrent.CopyOnWriteArrayList<Cookie> cookies = new java.util.concurrent.CopyOnWriteArrayList<>();
-
-            @Override
-            public void saveFromResponse(HttpUrl url, List<Cookie> list) {
-                for (Cookie c : list) {
-                    cookies.removeIf(existing ->
-                        existing.name().equals(c.name()) &&
-                        existing.domain().equals(c.domain()) &&
-                        existing.path().equals(c.path()));
-                    cookies.add(c);
-                }
-            }
-
-            @Override
-            public List<Cookie> loadForRequest(HttpUrl url) {
-                List<Cookie> matched = new java.util.ArrayList<>();
-                for (Cookie cookie : cookies) {
-                    if (cookie.matches(url)) {
-                        matched.add(cookie);
-                    }
-                }
-                return matched;
-            }
-        };
+        return new InMemoryCookieJar();
     }
 
     // ========== HTTP ==========
@@ -129,7 +157,7 @@ public class JwxtSession {
         return new Request.Builder()
                 .url(fullUrl(path))
                 .header("Referer", refererPath != null ? fullUrl(refererPath) : referer())
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("User-Agent", userAgent)
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8")
                 .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
     }
@@ -514,14 +542,46 @@ public class JwxtSession {
 
     /**
      * 执行登录流程。
+     *
+     * <p>遇到验证码类失败（服务端在登录失败次数超限后强制验证码）时，
+     * 自动抹除浏览器身份（清 Cookie + 轮换 UA）后重试一次；重试前先
+     * 检查新登录页是否仍渲染验证码，若仍强制则不再提交，直接以
+     * {@link CaptchaRequiredException} 终止。密码错误等非验证码失败
+     * 不重试，避免叠加失败计数导致账号锁定。</p>
      */
     private void doLogin() throws LoginException {
+        try {
+            loginAttempt();
+        } catch (CaptchaRequiredException e) {
+            clearBrowserIdentity();
+            try {
+                loginAttempt();
+            } catch (CaptchaRequiredException e2) {
+                throw new CaptchaRequiredException(
+                    "教务系统触发验证码保护：登录失败次数过多，已自动重置登录环境仍无效。"
+                        + "请等待约3分钟后再试，或先用浏览器登录一次教务系统", e2);
+            }
+        } catch (LoginException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new LoginException("登录异常: " + e.getMessage(), e);
+        }
+    }
+
+    /** 单次登录尝试：取登录页（含验证码强制检测）→ RSA 加密 → 提交 → 初始化会话。 */
+    private void loginAttempt() throws LoginException {
         try {
             // 1. 获取 csrftoken（登录页不经过 session 检查，直接走内部方法）
             String loginHtml = getInternal(LOGIN_PATH);
             Document doc = Jsoup.parse(loginHtml);
             var csrfInput = doc.selectFirst("input[name=csrftoken]");
             this.csrfToken = csrfInput != null ? csrfInput.attr("value") : "";
+
+            // 1.5 验证码强制检测：失败次数超限后服务端会在登录页渲染验证码输入框，
+            //     正常状态无该元素。此时提交必然失败，先终止等待身份重置。
+            if (isCaptchaEnforced(doc)) {
+                throw new CaptchaRequiredException("教务系统要求输入验证码（登录失败次数过多）");
+            }
 
             // 2. 加密密码
             String encryptedPwd = encryptPassword(password);
@@ -555,6 +615,19 @@ public class JwxtSession {
         }
     }
 
+    /**
+     * 判断登录页是否强制要求验证码。
+     *
+     * <p>登录失败次数超过 yzcskz（默认 3）后，服务端渲染登录页时会出现
+     * 验证码输入框（#yzm/#yzmDiv，图片来自 /kaptcha）；部分部署用
+     * #sfxyyzm 隐藏域控制，一并列出。</p>
+     */
+    static boolean isCaptchaEnforced(Document doc) {
+        if (doc.selectFirst("#yzm") != null || doc.selectFirst("#yzmDiv") != null) return true;
+        var flag = doc.selectFirst("#sfxyyzm");
+        return flag != null && !"0".equals(flag.attr("value").trim());
+    }
+
     public void ensureLogin() {
         if (!loggedIn.get()) {
             throw new NotLoggedInException();
@@ -566,10 +639,40 @@ public class JwxtSession {
         loggedIn.set(false);
     }
 
+    // ========== 身份重置（验证码保护应对） ==========
+
+    /**
+     * 抹除浏览器身份：清空全部 Cookie + 轮换 User-Agent + 置登录态为未登录。
+     *
+     * <p>服务端在登录失败次数超限后强制验证码。实测该强制疑似与会话
+     * 标识（Cookie 等）绑定，抹除后重新获取登录页即可恢复正常登录；
+     * 若服务端按账号维度强制，则本方法无效，重试后仍会要求验证码。</p>
+     */
+    public synchronized void clearBrowserIdentity() {
+        CookieJar jar = httpClient.cookieJar();
+        if (jar instanceof ClearableCookieJar) {
+            ((ClearableCookieJar) jar).clear();
+        }
+        rotateUserAgent();
+        loggedIn.set(false);
+        LOG.info("Browser identity cleared: cookies wiped, UA rotated");
+    }
+
+    /** 从 UA 池随机换一个与当前不同的 User-Agent。 */
+    private void rotateUserAgent() {
+        if (USER_AGENTS.length < 2) return;
+        String next = userAgent;
+        while (next.equals(userAgent)) {
+            next = USER_AGENTS[ThreadLocalRandom.current().nextInt(USER_AGENTS.length)];
+        }
+        this.userAgent = next;
+    }
+
     // ========== 状态 ==========
 
     public boolean isLoggedIn() { return loggedIn.get(); }
     public String getUsername() { return username; }
+    public String getUserAgent() { return userAgent; }
     public OkHttpClient getHttpClient() { return httpClient; }
     public String getBaseUrl() { return baseUrl; }
     public RetryConfig getRetryConfig() { return retryConfig; }
@@ -584,17 +687,28 @@ public class JwxtSession {
     private void raiseLoginError(Response resp) throws IOException {
         String html = resp.body() != null ? resp.body().string() : "";
         Document doc = Jsoup.parse(html);
+        String message = null;
         String[] selectors = {"#tips", "#errorMsg", ".error", ".alert-danger", ".form-msg"};
         for (String sel : selectors) {
             var el = doc.selectFirst(sel);
             if (el != null && !el.text().isBlank()) {
-                throw new LoginException(el.text().trim());
+                message = el.text().trim();
+                break;
             }
         }
-        var title = doc.selectFirst("title");
-        if (title != null && (title.text().contains("错误") || title.text().contains("失败"))) {
-            throw new LoginException(title.text().trim());
+        if (message == null) {
+            var title = doc.selectFirst("title");
+            if (title != null && (title.text().contains("错误") || title.text().contains("失败"))) {
+                message = title.text().trim();
+            }
         }
-        throw new LoginException("用户名或密码错误，或账号已被锁定");
+        if (message == null) {
+            message = "用户名或密码错误，或账号已被锁定";
+        }
+        // 验证码类失败单独分类，供上层自动重置身份重试 / 友好提示
+        if (message.contains("验证码")) {
+            throw new CaptchaRequiredException(message);
+        }
+        throw new LoginException(message);
     }
 }
